@@ -20,7 +20,9 @@
 #include <float.h>
 #include <limits>
 #include <stdint.h>
+#include <functional>
 #include <stdio.h>
+#include <stdexcept>
 #include <vector>
 #include <cmath>
 #include <iostream>
@@ -33,6 +35,7 @@
 #include <sycl/half_type.hpp>
 
 #include "ggml-sycl.h"
+#include "common.hpp"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
 
@@ -44,6 +47,7 @@
 #include "ggml-sycl/sycl_hw.hpp"
 #include "ggml-sycl/getrows.hpp"
 #include "ggml.h"
+#include "presets.hpp"
 
 static bool g_sycl_loaded = false;
 int g_ggml_sycl_debug = 0;
@@ -1329,75 +1333,48 @@ std::unique_ptr<ggml_sycl_pool> ggml_backend_sycl_context::new_pool_for_device(q
 // struct ggml_sycl_pool_vmm : public ggml_sycl_pool
 
 /// kernels
-typedef void (*ggml_sycl_op_mul_mat_t)(
-    ggml_backend_sycl_context & ctx,
-    const ggml_tensor *src0, const ggml_tensor *src1, ggml_tensor *dst,
-    const char *src0_dd_i, const float *src1_ddf_i, const char *src1_ddq_i,
-    float *dst_dd_i, const int64_t row_low, const int64_t row_high,
-    const int64_t src1_ncols, const int64_t src1_padded_row_size,
-    const queue_ptr &stream);
+typedef void (*ggml_sycl_op_mul_mat_t)(ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+                                       const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i,
+                                       const float * src1_ddf_i, const char * src1_ddq_i, float * dst_dd_i,
+                                       const int64_t row_low, const int64_t row_high, const int64_t src1_ncols,
+                                       const int64_t src1_padded_row_size, const queue_ptr & stream);
 
-
-
-template<int QUANT_BLOCK_TILE>
+template <int ElementsPerWI>
 static void quantize_q8_1(const float * __restrict__ x, void * __restrict__ vy, const int kx, const int kx_padded,
-                          const sycl::nd_item<3> &item_ct1) {
-    const int ix = (item_ct1.get_local_range(2) * item_ct1.get_group(2) +
-                    item_ct1.get_local_id(2)) * QUANT_BLOCK_TILE;
-
-    if (ix >= kx_padded) {
-        return;
-    }
-
-    const int iy = item_ct1.get_local_range(1) * item_ct1.get_group(1) +
-                   item_ct1.get_local_id(1);
-
-    const int i_padded = iy*kx_padded + ix;
+                          const sycl::nd_item<1> & it) {
+    auto subgroup_id = it.get_group(0);
+    auto wi_id       = it.get_local_id(0);
 
     block_q8_1 * y = (block_q8_1 *) vy;
 
-    const int ib = i_padded / QK8_1; // block index
-    const int iqs = i_padded % QK8_1; // quant index
-    typedef  sycl::vec<float, QUANT_BLOCK_TILE> TC;
-    typedef  sycl::vec<int8_t, QUANT_BLOCK_TILE> TQ;
-    TC zeros;
-    TQ qzeros;
-#pragma unroll
-    for (int i = 0; i < QUANT_BLOCK_TILE; i++)
-    {
-        zeros[i] = 0.f;
-        qzeros[i] = 0;
+    sycl::vec<float, ElementsPerWI>  wi_f32_vals;
+    sycl::vec<int8_t, ElementsPerWI> quantized_values;
+    wi_f32_vals = *reinterpret_cast<const sycl::vec<float, ElementsPerWI> *>(x + subgroup_id * QK8_1 + ElementsPerWI * wi_id);
+    float sum   = 0.0f;
+    float amax  = 0.0f;
+
+#pragma unroll(ElementsPerWI)
+    for (int i = 0; i < ElementsPerWI; i++) {
+        sum += wi_f32_vals[i];
+        amax = sycl::fmax(sycl::fabs(wi_f32_vals[i]), amax);
+        quantized_values[i] = 0;
     }
-    const TC xi = ix < kx ? *(const TC *)&x[iy * kx + ix] : zeros;
-    float sum = xi[0];
-    float amax = sycl::fabs(xi[0]);
-#pragma unroll
-    for (int i = 1; i < QUANT_BLOCK_TILE; i++)
-    {
-        sum += xi[i];
-        amax = sycl::fmax(sycl::fabs(xi[i]), amax);
-    }
-    sum = warp_reduce_sum(sum, item_ct1);
-    amax = warp_reduce_max(amax, item_ct1);
+    sum  = warp_reduce_sum(sum, it);
+    amax = warp_reduce_max(amax, it);
 
     const float d = amax / 127;
-    TQ q = qzeros;
-    if (amax != 0.0f)
-    {
-#pragma unroll
-        for (int i = 0; i < QUANT_BLOCK_TILE; i++) {
-            q[i] = sycl::round(xi[i] / d);
+    if (amax != 0) {
+#pragma unroll(ElementsPerWI)
+        for (int i = 0; i < ElementsPerWI; i++) {
+            quantized_values[i] = sycl::round(wi_f32_vals[i] / d);
         }
     }
 
-    *(TQ *)&y[ib].qs[iqs] = q;
-
-    if (iqs > 0) {
-        return;
+    // Since sg_size = wg_size;
+    *reinterpret_cast<sycl::vec<int8_t, ElementsPerWI> *>(&y[subgroup_id].qs[ElementsPerWI * wi_id]) = quantized_values;
+    if (wi_id == 0) {
+        *reinterpret_cast<sycl::half2 *>(&y[subgroup_id].ds) = sycl::half2(sycl::half(sum), sycl::half(d));
     }
-
-    reinterpret_cast<sycl::half &>(y[ib].ds.x()) = d;
-    reinterpret_cast<sycl::half &>(y[ib].ds.y()) = sum;
 }
 
 static void mul_mat_p021_f16_f32(
@@ -1687,21 +1664,23 @@ static  void pool2d_nchw_kernel(
 static void quantize_row_q8_1_sycl(const float *x, void *vy, const int kx,
                                    const int ky, const int kx_padded,
                                    queue_ptr stream) {
-    const int block_num_x = (kx_padded + SYCL_QUANTIZE_BLOCK_SIZE - 1) / SYCL_QUANTIZE_BLOCK_SIZE;
-    const sycl::range<3> num_blocks(1, ky, block_num_x);
-    int constexpr QUANT_BLOCK_TILE = QK8_1 / WARP_SIZE;
-    static_assert(QK8_1 % WARP_SIZE == 0);
-    const sycl::range<3> block_size(1, 1, SYCL_QUANTIZE_BLOCK_SIZE / QUANT_BLOCK_TILE);
-    {
-        dpct::has_capability_or_fail(stream->get_device(),
-                                     {sycl::aspect::fp16});
-
-        stream->parallel_for(
-            sycl::nd_range<3>(num_blocks * block_size, block_size),
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
-                quantize_q8_1<QUANT_BLOCK_TILE>(x, vy, kx, kx_padded, item_ct1);
-            });
+    if (kx % WARP_SIZE != 0) {
+        throw std::runtime_error("uh oh");
     }
+    std::size_t   local_range             = WARP_SIZE;
+    std::size_t   num_sub_groups_required = ((kx / WARP_SIZE));
+    constexpr int ElementsPerWI           = QK8_1 / WARP_SIZE;
+    std::size_t   global_range            = num_sub_groups_required * local_range;
+    // std::cout << "Global_range:  " << global_range << " num_sgs_required: " << num_sub_groups_required << ": kx: " << kx <<  std::endl;
+
+    dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16 });
+
+    stream->parallel_for(sycl::nd_range<1>({ global_range }, { local_range }),
+                         [=](sycl::nd_item<1> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                             quantize_q8_1<ElementsPerWI>(x, vy, kx, kx_padded, item_ct1);
+                         });
+    stream->wait_and_throw();
+    //std::cout << "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" << std::endl;
 }
 
 static void ggml_mul_mat_p021_f16_f32_sycl(const void *vx, const float *y,
@@ -2290,6 +2269,8 @@ static void ggml_sycl_op_mul_mat(ggml_backend_sycl_context & ctx, const ggml_ten
     const int64_t ne0 = dst->ne[0];
     const int64_t ne1 = dst->ne[1];
 
+    //printf("%ld %ld %ld %ld \n", dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3]);
+
     const int nb2 = dst->nb[2];
     const int nb3 = dst->nb[3];
 
@@ -2402,6 +2383,7 @@ static void ggml_sycl_op_mul_mat(ggml_backend_sycl_context & ctx, const ggml_ten
             dev[i].src1_ddq = dev[i].src1_ddq_alloc.alloc(ctx.pool(i), nrows1*src1_padded_col_size*q8_1_ts/q8_1_bs);
 
             if (src1_on_device && src1_is_contiguous) {
+
                 quantize_row_q8_1_sycl(dev[i].src1_ddf, dev[i].src1_ddq, ne10, nrows1, src1_padded_col_size, stream);
                 /*
                 DPCT1010:90: SYCL uses exceptions to report errors and does not
