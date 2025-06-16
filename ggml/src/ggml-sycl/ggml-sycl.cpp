@@ -21,13 +21,16 @@
 #include <limits>
 #include <stdint.h>
 #include <stdio.h>
+#include <sycl/usm.hpp>
 #include <vector>
 #include <cmath>
 #include <iostream>
 #include <fstream>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <regex>
+#include <random>
 
 #include <sycl/sycl.hpp>
 #include <sycl/half_type.hpp>
@@ -35,6 +38,7 @@
 #include "ggml-sycl.h"
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+
 
 #include "ggml-sycl/backend.hpp"
 #include "ggml-sycl/common.hpp"
@@ -45,12 +49,15 @@
 #include "ggml-sycl/getrows.hpp"
 #include "ggml.h"
 
+#include "ggml-quants.h"
+
 static bool g_sycl_loaded = false;
 int g_ggml_sycl_debug = 0;
 int g_ggml_sycl_disable_optimize = 0;
 int g_ggml_sycl_disable_graph = 0;
 int g_ggml_sycl_disable_dnn = 0;
 int g_ggml_sycl_prioritize_dmmv = 0;
+int g_ggml_sycl_use_intel_builtins = 0;
 
 static ggml_sycl_device_info ggml_sycl_init() {
     ggml_sycl_device_info info = {};
@@ -85,6 +92,7 @@ static ggml_sycl_device_info ggml_sycl_init() {
             100 * prop.get_major_version() + 10 * prop.get_minor_version();
         info.devices[i].hw_info = get_device_hw_info(&device);
         info.devices[i].opt_feature = check_gpu_optimize_feature(info.devices[i].hw_info.arch);
+        can_enable_intel_builtins(info.devices[i].hw_info.arch, info.devices[i].opt_feature);
 
         info.max_work_group_sizes[i] = prop.get_max_work_group_size();
     }
@@ -176,20 +184,6 @@ void ggml_backend_sycl_print_sycl_devices() {
     print_device_opt_feature(device_count);
 }
 
-static inline int get_sycl_env(const char *env_name, int default_val) {
-    char *user_device_string = getenv(env_name);
-    int user_number = default_val;
-
-    unsigned n;
-    if (user_device_string != NULL &&
-        sscanf(user_device_string, " %u", &n) == 1) {
-        user_number = (int)n;
-    } else {
-        user_number = default_val;
-    }
-    return user_number;
-}
-
 static void ggml_check_sycl() try {
     static bool initialized = false;
 
@@ -199,10 +193,14 @@ static void ggml_check_sycl() try {
         g_ggml_sycl_disable_graph = get_sycl_env("GGML_SYCL_DISABLE_GRAPH", 1);
         g_ggml_sycl_disable_dnn = get_sycl_env("GGML_SYCL_DISABLE_DNN", 0);
         g_ggml_sycl_prioritize_dmmv = get_sycl_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
+        g_ggml_sycl_use_intel_builtins = get_sycl_env("GGML_SYCL_USE_INTEL_BUILTINS", 0);
+
         GGML_SYCL_DEBUG("[SYCL] call ggml_check_sycl\n");
         GGML_LOG_INFO("Running with Environment Variables:\n");
         GGML_LOG_INFO("  GGML_SYCL_DEBUG: %d\n", g_ggml_sycl_debug);
         GGML_LOG_INFO("  GGML_SYCL_DISABLE_OPT: %d\n", g_ggml_sycl_disable_optimize);
+        GGML_LOG_INFO("  GGML_SYCL_USE_INTEL_BUILTINS: %d\n", g_ggml_sycl_use_intel_builtins);
+
 #ifdef GGML_SYCL_GRAPH
         GGML_LOG_INFO("  GGML_SYCL_DISABLE_GRAPH: %d\n", g_ggml_sycl_disable_graph);
 #else
@@ -3131,6 +3129,97 @@ static void reorder_qw_q6_k(uint8_t * data_device, size_t size, size_t offset, d
     sycl::free(tmp_buf, *stream);
 }
 
+static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_t cols, size_t offset,
+                                       dpct::queue_ptr stream) {
+    GGML_ASSERT(offset % sizeof(block_q6_K) == 0);
+    GGML_ASSERT(cols % QK_K == 0);
+    const std::size_t nblocks = rows * (cols / QK_K);
+    const std::size_t size    = nblocks * sizeof(block_q6_K);
+    auto *            tmp_buf = sycl::malloc_shared<uint8_t>(size, *stream);
+
+    SYCL_CHECK(CHECK_TRY_ERROR((*stream).memcpy(tmp_buf, data_device, size).wait()));
+
+    auto *       ql_ptr     = data_device;
+    auto *       qh_ptr     = ql_ptr + (QK_K / 2) * nblocks;
+    auto *       scales_ptr = qh_ptr + (QK_K / 4) * nblocks;
+    sycl::half * dm_ptr     = (sycl::half *) (scales_ptr + (QK_K / 16) * nblocks);
+
+    stream
+        ->parallel_for(nblocks,
+                       [=](auto i) {
+                           const block_q6_K * x  = (const block_q6_K *) tmp_buf;
+                           auto row = i / rows;
+                           auto col = i % rows;
+                           auto blocks_per_col = cols / QK_K;
+                           auto block_offset = row * blocks_per_col + col;
+
+                           const uint8_t * ql              = x[block_offset].ql;
+                           const uint8_t * qh              = x[block_offset].qh;
+                           uint8_t *       base_ql_ptr     = ql_ptr + row * ((QK_K / 2) * blocks_per_col) + (QK_K / 2) * col;
+                           uint8_t *       base_qh_ptr     = qh_ptr + row * ((QK_K / 4) * blocks_per_col) + (QK_K / 4) * col;
+                           auto *       base_scales_ptr = scales_ptr + row * ((QK_K / 16) * blocks_per_col) + (QK_K / 16) * col;
+
+                           uint8_t ql_reordered[QK_K / 2];
+                           uint8_t qh_reordered[QK_K / 4];
+                           int8_t temp[QK_K];
+
+                           // zero out these intermediate reordered buffers
+                           for (int j = 0; j < QK_K / 2; j++) {
+                               ql_reordered[j] = 0;
+                           }
+
+                           for (int j = 0; j < QK_K / 4; j++) {
+                               qh_reordered[j] = 0;
+                           }
+                           
+                           // first collate and pack ql and qh belonging to the same quant together
+                           int chunk_offset = 0;
+                           for (int n = 0; n < QK_K; n += 128) {
+                                for (int l = 0; l < 32; ++l) {
+                                    const int8_t q1 = (int8_t)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4));
+                                    const int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4));
+                                    const int8_t q3 = (int8_t)((ql[l +  0]  >> 4) | (((qh[l] >> 4) & 3) << 4));
+                                    const int8_t q4 = (int8_t)((ql[l + 32]  >> 4) | (((qh[l] >> 6) & 3) << 4));
+                                    temp[chunk_offset + l +  0] = q1;
+                                    temp[chunk_offset + l + 32] = q2;
+                                    temp[chunk_offset + l + 64] = q3;
+                                    temp[chunk_offset + l + 96] = q4;
+                                }
+                                chunk_offset  += 128;
+                                ql += 64;
+                                qh += 32;
+                            }
+                            
+                            // Now separate them again
+                            for (int j = 0; j < QK_K; j++) {
+                                int8_t low_bits = temp[j] & 0x0F;
+                                ql_reordered[j / 2] = ql_reordered[j / 2] | (low_bits << (4 * (j % 2)));
+                            }
+
+                            for (int j = 0; j < QK_K; j++) {
+                                int8_t high_bits = temp[j] >> 4;
+                                qh_reordered[j / 4] = qh_reordered[j / 4] | (high_bits << (2 * (j % 4)));
+                            }
+
+                           for(int j = 0; j < QK_K / 2; j++) {
+                            base_ql_ptr[j] = ql_reordered[j];
+                           }
+
+                           for(int j = 0; j < QK_K / 4; j++) {
+                            base_qh_ptr[j] = qh_reordered[j];
+                           }
+
+                           for (int j = 0; j < QK_K / 16; ++j) {
+                               base_scales_ptr[j] = x[block_offset].scales[j];
+                           }
+
+                           dm_ptr[block_offset] = x[block_offset].d;
+
+                       })
+        .wait_and_throw();
+        sycl::free(tmp_buf, *stream);
+}
+
 static void reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
     uint8_t * data_device = (uint8_t *) src0->data;
     size_t ncols = src0->ne[0];
@@ -3145,7 +3234,12 @@ static void reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
             reorder_qw_q4_k(data_device, size, 0, stream);
             break;
         case GGML_TYPE_Q6_K:
-            reorder_qw_q6_k(data_device, size, 0, stream);
+            std::cout << "g_ggml_sycl_use_intel_builtins: " << g_ggml_sycl_use_intel_builtins << std::endl;
+            if (g_ggml_sycl_use_intel_builtins) {
+                reorder_qw_q6_k_contiguous(data_device, nrows, ncols, 0, stream);
+            } else {
+                reorder_qw_q6_k(data_device, size, 0, stream);
+            }
             break;
         default:
             GGML_ABORT("reorder_qw() called with unsupported type");

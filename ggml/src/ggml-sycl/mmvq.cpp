@@ -1,9 +1,35 @@
 #include "mmvq.hpp"
 
-#include "ggml.h"
+#include <cstddef>
+#include <cstdint>
+#include <sycl/aliases.hpp>
+#include <sycl/handler.hpp>
+#include <sycl/nd_item.hpp>
+#include <sycl/queue.hpp>
+
 #include "common.hpp"
+#include "ggml-quants.h"
+#include "ggml.h"
+#include "q6_k_tiled_gemv.hpp"
 #include "quants.hpp"
 #include "vecdotq.hpp"
+
+static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, const int8_t * q8_1_input,
+                            const int8_t * q6_scales, const sycl::half* q6_k_superblock_scales, const sycl::half2 * q8_scales, float * output, std::size_t m,
+                            std::size_t k, sycl::queue & queue) {
+    constexpr int     SubgroupSize           = 16;
+    constexpr int     tile_height            = 16;
+    const int         num_subgroups_required = m / tile_height;
+    const std::size_t local_range            = static_cast<std::size_t>(SubgroupSize);
+    const std::size_t global_range           = num_subgroups_required * local_range;
+    queue.submit([&](sycl::handler& cgh) {
+        cgh.parallel_for(sycl::nd_range<1>({ global_range }, { local_range }),
+                         [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SubgroupSize)]] {
+                             [[clang::always_inline]] sycl::q6k_tiled_gemv(q6_k_low, q6_k_high, q8_1_input, output,
+                                                                           q6_scales, q8_scales, q6_k_superblock_scales, m, k, it);
+                         });
+    });
+}
 
 template <typename reorder_vec_dot_q_sycl>
 static void mul_mat_vec_q_reorder(const void * __restrict__ vx, const void * __restrict__ vy, float * __restrict__ dst,
@@ -1020,8 +1046,24 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
             case GGML_TYPE_Q6_K:
                 if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
                     ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
-                    GGML_SYCL_DEBUG("Calling reorder_mul_mat_vec_q6_k_q8_1_sycl\n");
-                    reorder_mul_mat_vec_q6_k_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
+                    if (ctx.opt_feature.can_use_intel_builtins) {
+                        GGML_SYCL_DEBUG("calling q6_k_tiled_gemv");
+                        auto m                 = row_diff;
+                        auto k                 = ne00;
+                        auto num_q6_blocks     = m * (k / QK_K);
+                        auto q6_l_ptr          = (int8_t *) src0_dd_i;
+                        auto q6_h_ptr          = q6_l_ptr + (QK_K / 2) * num_q6_blocks;
+                        auto scales_u8_q6_k    = q6_h_ptr + (QK_K / 4) * num_q6_blocks;
+                        auto scales_q6_k_superblock      = (sycl::half*)(scales_u8_q6_k  + num_q6_blocks * (QK_K / 16));
+                        auto q8_1_input        = (int8_t *) src1_ddq_i_bs;
+                        auto q8_1_input_scales = (sycl::half2 *) (q8_1_input + k);
+                        q6_k_tiled_gemv(q6_l_ptr, q6_h_ptr, q8_1_input, scales_u8_q6_k, scales_q6_k_superblock, q8_1_input_scales, dst_dd_i_bs, m, k,
+                                        *stream);
+                    } else {
+                        GGML_SYCL_DEBUG("Calling reorder_mul_mat_vec_q6_k_q8_1_sycl\n");
+                        reorder_mul_mat_vec_q6_k_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff,
+                                                           stream);
+                    }
                 } else {
                     GGML_SYCL_DEBUG("Calling mul_mat_vec_q6_k_q8_1_sycl\n");
                     mul_mat_vec_q6_K_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
