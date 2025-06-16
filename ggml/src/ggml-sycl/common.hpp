@@ -14,6 +14,7 @@
 #define GGML_SYCL_COMMON_HPP
 
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -191,6 +192,7 @@ inline dpct::err0 ggml_sycl_set_device(const int device) try {
 //////////////////////
 struct optimize_feature {
     bool reorder=false;
+    bool can_use_intel_builtins = false;
 };
 
 struct sycl_device_info {
@@ -199,7 +201,7 @@ struct sycl_device_info {
     // size_t  smpb;               // max. shared memory per block
     bool    vmm;                // virtual memory support
     size_t  total_vram;
-    //sycl_hw_info hw_info;     \\ device id and aarch, currently not used
+    sycl_hw_info hw_info;     // device id and aarch, currently not used
     optimize_feature opt_feature;
 };
 
@@ -285,6 +287,28 @@ struct ggml_tensor_extra_gpu {
 };
 
 void release_extra_gpu(ggml_tensor_extra_gpu * extra, std::vector<queue_ptr> streams={});
+
+inline int get_sycl_env(const char *env_name, int default_val) {
+    char *user_device_string = getenv(env_name);
+    int user_number = default_val;
+
+    unsigned n;
+    if (user_device_string != NULL &&
+        sscanf(user_device_string, " %u", &n) == 1) {
+        user_number = (int)n;
+    } else {
+        user_number = default_val;
+    }
+    return user_number;
+}
+
+inline void can_enable_intel_builtins(syclex::architecture & arch, optimize_feature & opt_feature_struct) {
+    int can_use_intel_builtins_env_var_val = get_sycl_env("GGML_SYCL_USE_INTEL_BUILTINS", 0);
+    if (can_use_intel_builtins_env_var_val &&
+        (arch == syclex::architecture::intel_gpu_bmg_g21 || arch == syclex::architecture::intel_gpu_lnl_m)) {
+        opt_feature_struct.can_use_intel_builtins = true;
+    }
+}
 
 namespace sycl_ex = sycl::ext::oneapi::experimental;
 struct ggml_backend_sycl_context {
