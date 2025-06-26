@@ -15,19 +15,22 @@
 #include "vecdotq.hpp"
 
 static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, const int8_t * q8_1_input,
-                            const int8_t * q6_scales, const sycl::half* q6_k_superblock_scales, const sycl::half2 * q8_scales, float * output, std::size_t m,
-                            std::size_t k, sycl::queue & queue) {
+                            const int8_t * q6_scales, const sycl::half * q6_k_superblock_scales,
+                            const sycl::half2 * q8_scales, float * output, std::size_t m, std::size_t k,
+                            dpct::queue_ptr stream) {
     constexpr int     SubgroupSize           = 16;
     constexpr int     tile_height            = 16;
     const int         num_subgroups_required = m / tile_height;
     const std::size_t local_range            = static_cast<std::size_t>(SubgroupSize);
     const std::size_t global_range           = num_subgroups_required * local_range;
-    queue.submit([&](sycl::handler& cgh) {
-        cgh.parallel_for(sycl::nd_range<1>({ global_range }, { local_range }),
-                         [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SubgroupSize)]] {
-                             [[clang::always_inline]] sycl::q6k_tiled_gemv(q6_k_low, q6_k_high, q8_1_input, output,
-                                                                           q6_scales, q8_scales, q6_k_superblock_scales, m, k, it);
-                         });
+
+    sycl_launch(stream, [&](sycl::handler & cgh) {
+        sycl_parallel_for(cgh, sycl::nd_range<1>({ global_range }, { local_range }),
+                          [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SubgroupSize)]] {
+                              [[clang::always_inline]] sycl::q6k_tiled_gemv(q6_k_low, q6_k_high, q8_1_input, output,
+                                                                            q6_scales, q8_scales,
+                                                                            q6_k_superblock_scales, m, k, it);
+                          });
     });
 }
 
@@ -1058,7 +1061,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                         auto q8_1_input        = (int8_t *) src1_ddq_i_bs;
                         auto q8_1_input_scales = (sycl::half2 *) (q8_1_input + k);
                         q6_k_tiled_gemv(q6_l_ptr, q6_h_ptr, q8_1_input, scales_u8_q6_k, scales_q6_k_superblock, q8_1_input_scales, dst_dd_i_bs, m, k,
-                                        *stream);
+                                        stream);
                     } else {
                         GGML_SYCL_DEBUG("Calling reorder_mul_mat_vec_q6_k_q8_1_sycl\n");
                         reorder_mul_mat_vec_q6_k_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff,
