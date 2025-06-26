@@ -3213,7 +3213,9 @@ static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_
                                base_scales_ptr[j] = x[block_offset].scales[j];
                            }
 
-                           dm_ptr[block_offset] = x[block_offset].d;
+                           // store super-scales in a transposed fashion
+                           auto super_scale_offset = col * rows + row;
+                           dm_ptr[super_scale_offset] = x[block_offset].d;
 
                        })
         .wait_and_throw();
@@ -3234,7 +3236,6 @@ static void reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
             reorder_qw_q4_k(data_device, size, 0, stream);
             break;
         case GGML_TYPE_Q6_K:
-            std::cout << "g_ggml_sycl_use_intel_builtins: " << g_ggml_sycl_use_intel_builtins << std::endl;
             if (g_ggml_sycl_use_intel_builtins) {
                 reorder_qw_q6_k_contiguous(data_device, nrows, ncols, 0, stream);
             } else {

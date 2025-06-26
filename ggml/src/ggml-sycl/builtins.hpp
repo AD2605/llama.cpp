@@ -28,7 +28,7 @@ template <class T, int N> using vector_t = sycl::marray<T, N>;
 #else
 #    define SYCL_DEVICE_OCL(x)
 #endif
-
+namespace sycl::vector_types {
 using uint8 = vector_t<uint, 8>;
 using uint2 = vector_t<uint, 2>;
 
@@ -36,41 +36,46 @@ using short16 = vector_t<short, 16>;
 using short8  = vector_t<unsigned short, 8>;
 using short2  = vector_t<unsigned short, 2>;
 
-using uint8_32 = vector_t<uint8_t, 32>;
-using char16   = vector_t<char, 16>;
+using uint8_32  = vector_t<uint8_t, 32>;
+using char16    = vector_t<signed char, 16>;
+using int8_t_16 = vector_t<int8_t, 16>;
+}  // namespace sycl::vector_types
 
 // loads
-SYCL_DEVICE_BUILTIN(short16 __builtin_IB_subgroup_block_read_flat_u8_m16k32v1(intptr_t baseoffset, int width_minus_one,
+SYCL_DEVICE_BUILTIN(sycl::vector_types::short16 __builtin_IB_subgroup_block_read_flat_u8_m16k32v1(intptr_t baseoffset, int width_minus_one,
                                                                               int height_minus_one, int pitch_minus_one,
-                                                                              uint2 coord));
-SYCL_DEVICE_BUILTIN(char16 __builtin_IB_subgroup_block_read_flat_u8_m16k16v1(intptr_t baseoffset, int width_minus_one,
+                                                                              sycl::vector_types::uint2 coord));
+SYCL_DEVICE_BUILTIN(sycl::vector_types::char16 __builtin_IB_subgroup_block_read_flat_u8_m16k16v1(intptr_t baseoffset, int width_minus_one,
                                                                              int height_minus_one, int pitch_minus_one,
-                                                                             uint2 coord));
+                                                                             sycl::vector_types::uint2 coord));
 SYCL_DEVICE_BUILTIN(int __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(intptr_t baseoffset, int width_minus_one,
                                                                          int height_minus_one, int pitch_minus_one,
-                                                                         uint2 coord));
+                                                                         sycl::vector_types::uint2 coord));
+SYCL_DEVICE_BUILTIN(short __builtin_IB_subgroup_block_read_flat_u16_m1k16v1(intptr_t baseoffset, int width_minus_one,
+                                                                         int height_minus_one, int pitch_minus_one,
+                                                                         sycl::vector_types::uint2 coord));
 
 //stores
 SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_write_flat_u32_m1k16v1(intptr_t baseoffset, int width_minus_one,
                                                                             int height_minus_one, int pitch_minus_one,
-                                                                            uint2 coord, uint data));
+                                                                            sycl::vector_types::uint2 coord, uint data));
 
 // prefetches
 SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_read_prefetch_u8_m16k32v1(intptr_t baseoffset, int width_minus_one,
                                                                                int height_minus_one,
-                                                                               int pitch_minus_one, uint2 coord,
+                                                                               int pitch_minus_one, sycl::vector_types::uint2 coord,
                                                                                LSC_LDCC cache_control));
 SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_read_prefetch_u8_m16k16v1(intptr_t baseoffset, int width_minus_one,
                                                                                int height_minus_one,
-                                                                               int pitch_minus_one, uint2 coord,
+                                                                               int pitch_minus_one, sycl::vector_types::uint2 coord,
                                                                                LSC_LDCC cache_control));
 SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_read_prefetch_u8_m1k64v1(intptr_t baseoffset, int width_minus_one,
                                                                               int height_minus_one, int pitch_minus_one,
-                                                                              uint2 coord, LSC_LDCC cache_control));
+                                                                              sycl::vector_types::uint2 coord, LSC_LDCC cache_control));
 
 SYCL_DEVICE_BUILTIN(void __builtin_IB_subgroup_block_read_prefetch_u32_m1k16(intptr_t baseoffset, int width_minus_one,
                                                                              int height_minus_one, int pitch_minus_one,
-                                                                             uint2 coord, LSC_LDCC cache_control));
+                                                                             sycl::vector_types::uint2 coord, LSC_LDCC cache_control));
 
 //DP4A instructions
 SYCL_DEVICE_BUILTIN(int __builtin_IB_dp4a_ss(int c, int a, int b, bool isSaturated));
