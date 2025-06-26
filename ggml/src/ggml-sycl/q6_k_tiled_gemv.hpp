@@ -68,14 +68,12 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
     auto       q6_k_h_width       = ((k / 4 - 1) * sizeof(int8_t));  // as we have 4 2 bit values packed in an int8_t;
     auto       q8_1_width         = (k - 1) * sizeof(int8_t);
     auto       result_width       = (m - 1) * sizeof(float);
-    auto       q6_u8_scale_width  = (k / QK_K) * 16 * sizeof(int8_t);
-    auto       q8_u32_scale_width = (k / QK8_1) * sizeof(float);
+    auto       q6_u8_scale_width  = ((k / QK_K) * 16 - 1) * sizeof(int8_t);
     auto       super_block_scale_width = (m - 1) * sizeof(sycl::half);
     const auto num_blocks_per_row      = k / QK_K;
 
     const int              tiles_required = m / tile_height;
     sycl::vec<float, 16>   accumulator;
-    sycl::vec<int32_t, 16> int32_temps;
     vector_types::char16   q6_u8_scales_vals;
     sycl::half             super_block_scale;
 
@@ -110,28 +108,20 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
                     (intptr_t) (q6_k_h), q6_k_h_width, m - 1, q6_k_h_width,
                     vector_types::uint2{ (uint) (element_width_offset + j), (uint) h_coord });
 
-#    pragma unroll(16)
-                for (uint8_t l = 0; l < 16; l++) {
-                    int32_temps[l] = pack_q6_k(q6_low_bits[l], q6_high_bits[l]);
-                }
-
                 int packed_q8_1_vals = __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(
                     (intptr_t) (q8_1), q8_1_width, 0, q8_1_width,
                     vector_types::uint2{ (uint) (element_width_offset + j), (uint) 0 });
-
-#    pragma unroll(16)
-                for (uint8_t l = 0; l < 16; l++) {
-                    int32_temps[l] = __builtin_IB_dp4a_ss(0, int32_temps[l], packed_q8_1_vals, dp4a_with_saturation);
-                }
 
                 sycl::half2 q8_dm_val =
                     q8_dm_scales[element_width_offset / QK8_1 + j / QK8_1 + (wi_id_in_sg * 4) / QK8_1];
 
 #    pragma unroll(16)
                 for (uint8_t l = 0; l < 16; l++) {
+                    int packed_q6_k_vals = pack_q6_k(q6_low_bits[l], q6_high_bits[l]);
+                    int dp4a_val = __builtin_IB_dp4a_ss(0, packed_q6_k_vals, packed_q8_1_vals, dp4a_with_saturation);
                     sycl::half q6_super_block_value = sycl::select_from_group(sg, super_block_scale, l);
-                    int8_t     q6_block_scale_val   = sycl::select_from_group(sg, q6_u8_scales_vals[l], (wi_id_in_sg ) / 4);
-                    accumulator[l] += int32_temps[l] * static_cast<float>(q6_super_block_value) *
+                    int8_t     q6_block_scale_val   = sycl::select_from_group(sg, q6_u8_scales_vals[l], j / 16 + (wi_id_in_sg ) / 4);
+                    accumulator[l] += dp4a_val * static_cast<float>(q6_super_block_value) *
                                       static_cast<float>(q6_block_scale_val) * static_cast<float>(q8_dm_val[0]);
                 }
             }

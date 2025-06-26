@@ -3148,8 +3148,8 @@ static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_
         ->parallel_for(nblocks,
                        [=](auto i) {
                            const block_q6_K * x  = (const block_q6_K *) tmp_buf;
-                           auto row = i / rows;
-                           auto col = i % rows;
+                           auto row = i % rows;
+                           auto col = i / rows;
                            auto blocks_per_col = cols / QK_K;
                            auto block_offset = row * blocks_per_col + col;
 
@@ -3213,8 +3213,8 @@ static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_
                                base_scales_ptr[j] = x[block_offset].scales[j];
                            }
 
-                           // store super-scales in a transposed fashion
                            auto super_scale_offset = col * rows + row;
+                           // store super-scales in a transposed fashion
                            dm_ptr[super_scale_offset] = x[block_offset].d;
 
                        })
