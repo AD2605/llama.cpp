@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <sycl/aliases.hpp>
+#include <sycl/ext/oneapi/experimental/root_group.hpp>
 #include <sycl/group_algorithm.hpp>
 #include <sycl/nd_item.hpp>
 #include <sycl/sycl.hpp>
@@ -14,6 +15,7 @@
 #include "cacheopts.hpp"
 #include "ggml-quants.h"
 
+#define sycl_print sycl::ext::oneapi::experimental::printf
 //
 /**
  * @brief This function packs 4 q6_k quants in a 32 bit value.
@@ -107,6 +109,46 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
                 vector_types::char16 q6_high_bits = __builtin_IB_subgroup_block_read_flat_u8_m16k16v1(
                     (intptr_t) (q6_k_h), q6_k_h_width, m - 1, q6_k_h_width,
                     vector_types::uint2{ (uint) (element_width_offset + j), (uint) h_coord });
+
+                if (j == 0) {
+                    // print values;
+                    float dequantized_values[64];
+                    for(int l = 0; l < 16; l++) {
+                        auto temp = pack_q6_k(q6_low_bits[l], q6_high_bits[l]);
+                        auto unpacked_int8s = *reinterpret_cast<sycl::vec<int8_t, 4>*>(&temp);
+                        for (int q = 0; q < 4; q++) {
+                            dequantized_values[l * 4 + q] = unpacked_int8s[q] * sycl::select_from_group(sg, super_block_scale, l) * 
+                            sycl::select_from_group(sg, q6_u8_scales_vals[l], j / 16 + (wi_id_in_sg ) / 4);
+                        }
+                    }
+                    sycl_print(
+                        "%lu %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %f",
+                        wi_id_in_sg, dequantized_values[0], dequantized_values[1], dequantized_values[2],
+                        dequantized_values[3], dequantized_values[4], dequantized_values[5], dequantized_values[6],
+                        dequantized_values[7], dequantized_values[8], dequantized_values[9], dequantized_values[10],
+                        dequantized_values[11], dequantized_values[12], dequantized_values[13], dequantized_values[14],
+                        dequantized_values[15], dequantized_values[16], dequantized_values[17], dequantized_values[18],
+                        dequantized_values[19], dequantized_values[20], dequantized_values[21], dequantized_values[22],
+                        dequantized_values[23], dequantized_values[24], dequantized_values[25], dequantized_values[26],
+                        dequantized_values[27], dequantized_values[28], dequantized_values[29], dequantized_values[30],
+                        dequantized_values[31], dequantized_values[32], dequantized_values[33], dequantized_values[34],
+                        dequantized_values[35], dequantized_values[36], dequantized_values[37], dequantized_values[38],
+                        dequantized_values[39], dequantized_values[40], dequantized_values[41], dequantized_values[42],
+                        dequantized_values[43], dequantized_values[44], dequantized_values[45], dequantized_values[46],
+                        dequantized_values[47], dequantized_values[48], dequantized_values[49], dequantized_values[50],
+                        dequantized_values[51], dequantized_values[52], dequantized_values[53], dequantized_values[54],
+                        dequantized_values[55], dequantized_values[56], dequantized_values[57], dequantized_values[58],
+                        dequantized_values[59], dequantized_values[60], dequantized_values[61], dequantized_values[62],
+                        dequantized_values[63]);
+                    sycl::group_barrier(it.get_group());
+                }
 
                 int packed_q8_1_vals = __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(
                     (intptr_t) (q8_1), q8_1_width, 0, q8_1_width,
