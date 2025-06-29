@@ -112,7 +112,7 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
 
                 if (j == 0) {
                     // print values;
-                    float dequantized_values[64];
+                    /*float dequantized_values[64];
                     for(int l = 0; l < 16; l++) {
                         auto temp = pack_q6_k(q6_low_bits[l], q6_high_bits[l]);
                         auto unpacked_int8s = *reinterpret_cast<sycl::vec<int8_t, 4>*>(&temp);
@@ -147,6 +147,15 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
                         dequantized_values[55], dequantized_values[56], dequantized_values[57], dequantized_values[58],
                         dequantized_values[59], dequantized_values[60], dequantized_values[61], dequantized_values[62],
                         dequantized_values[63]);
+                    */
+                    sycl_print("wi_id_in_sg %lu low_bits: %x %x %x %x %x %x %x %x \n", q6_low_bits[0],
+                    q6_low_bits[1], q6_low_bits[2], q6_low_bits[3], q6_low_bits[4], q6_low_bits[5], 
+                    q6_low_bits[6], q6_low_bits[7]);
+
+                    sycl_print("wi_id_in_sg %lu low_bits: %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x \n", 
+                    q6_high_bits[0], q6_high_bits[1], q6_high_bits[2], q6_high_bits[3], q6_high_bits[4], q6_high_bits[5], 
+                    q6_high_bits[6], q6_high_bits[7], q6_high_bits[8], q6_high_bits[9], q6_high_bits[10], q6_high_bits[11],
+                    q6_high_bits[12], q6_high_bits[13], q6_high_bits[14], q6_high_bits[15]);
                     sycl::group_barrier(it.get_group());
                 }
 
