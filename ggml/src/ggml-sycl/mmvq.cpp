@@ -21,6 +21,7 @@ static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, c
     constexpr int     SubgroupSize           = 16;
     constexpr int     tile_height            = 16;
     const int         num_subgroups_required = m / tile_height;
+    std::cout << "num subgroups required: " << num_subgroups_required << std::endl;
     const std::size_t local_range            = static_cast<std::size_t>(SubgroupSize);
     const std::size_t global_range           = num_subgroups_required * local_range;
 
