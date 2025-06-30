@@ -30,12 +30,13 @@ __attribute__((always_inline)) inline int pack_q6_k(const short & low_bits, cons
 // TODO: Reduce the number of brackets by checking the precedence order :)
 #pragma unroll(4)
     for (uint8_t i = 0; i < 4; i++) {
-        short   mask_low_bits  = (0x000F) << (4 * i);
-        int8_t  mask_high_bits = (0x03) << (2 * i);
-        int32_t q6_k_val       = static_cast<int32_t>((low_bits & mask_low_bits) >> (4 * i)) |
-                           (static_cast<int32_t>((high_bits & mask_high_bits) >> (2 * i)) << 4);
-        q6_k_val    = q6_k_val - 32;  // apply shift;
-        packed_q6_k = packed_q6_k | (q6_k_val << (8 * i));
+        uint16_t   mask_low_bits  = (0x000F) << (4 * i);
+        uint8_t  mask_high_bits = (0x3) << (2 * i);
+        uint8_t desired_low_bits = (low_bits & mask_low_bits) >> (4 * i);
+        uint8_t desired_high_bits = ((high_bits & mask_high_bits) >> (2 * i)) << 4;
+        int8_t full_value = static_cast<int8_t>(desired_high_bits | desired_low_bits);
+        full_value = sycl::sub_sat(full_value, (int8_t)32);
+        packed_q6_k |= (static_cast<uint32_t>(static_cast<uint8_t>(full_value)) << (8 * i));
     }
     return packed_q6_k;
 }
@@ -109,55 +110,6 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
                 vector_types::char16 q6_high_bits = __builtin_IB_subgroup_block_read_flat_u8_m16k16v1(
                     (intptr_t) (q6_k_h), q6_k_h_width, m - 1, q6_k_h_width,
                     vector_types::uint2{ (uint) (element_width_offset + j), (uint) h_coord });
-
-                if (j == 0) {
-                    // print values;
-                    /*float dequantized_values[64];
-                    for(int l = 0; l < 16; l++) {
-                        auto temp = pack_q6_k(q6_low_bits[l], q6_high_bits[l]);
-                        auto unpacked_int8s = *reinterpret_cast<sycl::vec<int8_t, 4>*>(&temp);
-                        for (int q = 0; q < 4; q++) {
-                            dequantized_values[l * 4 + q] = unpacked_int8s[q] * sycl::select_from_group(sg, super_block_scale, l) * 
-                            sycl::select_from_group(sg, q6_u8_scales_vals[l], j / 16 + (wi_id_in_sg ) / 4);
-                        }
-                    }
-                    sycl_print(
-                        "%lu %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
-                        "%.2f %.2f %.2f %.2f %.2f %.2f %.2f %f",
-                        wi_id_in_sg, dequantized_values[0], dequantized_values[1], dequantized_values[2],
-                        dequantized_values[3], dequantized_values[4], dequantized_values[5], dequantized_values[6],
-                        dequantized_values[7], dequantized_values[8], dequantized_values[9], dequantized_values[10],
-                        dequantized_values[11], dequantized_values[12], dequantized_values[13], dequantized_values[14],
-                        dequantized_values[15], dequantized_values[16], dequantized_values[17], dequantized_values[18],
-                        dequantized_values[19], dequantized_values[20], dequantized_values[21], dequantized_values[22],
-                        dequantized_values[23], dequantized_values[24], dequantized_values[25], dequantized_values[26],
-                        dequantized_values[27], dequantized_values[28], dequantized_values[29], dequantized_values[30],
-                        dequantized_values[31], dequantized_values[32], dequantized_values[33], dequantized_values[34],
-                        dequantized_values[35], dequantized_values[36], dequantized_values[37], dequantized_values[38],
-                        dequantized_values[39], dequantized_values[40], dequantized_values[41], dequantized_values[42],
-                        dequantized_values[43], dequantized_values[44], dequantized_values[45], dequantized_values[46],
-                        dequantized_values[47], dequantized_values[48], dequantized_values[49], dequantized_values[50],
-                        dequantized_values[51], dequantized_values[52], dequantized_values[53], dequantized_values[54],
-                        dequantized_values[55], dequantized_values[56], dequantized_values[57], dequantized_values[58],
-                        dequantized_values[59], dequantized_values[60], dequantized_values[61], dequantized_values[62],
-                        dequantized_values[63]);
-                    */
-                    sycl_print("wi_id_in_sg %lu low_bits: %x %x %x %x %x %x %x %x \n", q6_low_bits[0],
-                    q6_low_bits[1], q6_low_bits[2], q6_low_bits[3], q6_low_bits[4], q6_low_bits[5], 
-                    q6_low_bits[6], q6_low_bits[7]);
-
-                    sycl_print("wi_id_in_sg %lu low_bits: %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x %x \n", 
-                    q6_high_bits[0], q6_high_bits[1], q6_high_bits[2], q6_high_bits[3], q6_high_bits[4], q6_high_bits[5], 
-                    q6_high_bits[6], q6_high_bits[7], q6_high_bits[8], q6_high_bits[9], q6_high_bits[10], q6_high_bits[11],
-                    q6_high_bits[12], q6_high_bits[13], q6_high_bits[14], q6_high_bits[15]);
-                    sycl::group_barrier(it.get_group());
-                }
 
                 int packed_q8_1_vals = __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(
                     (intptr_t) (q8_1), q8_1_width, 0, q8_1_width,
