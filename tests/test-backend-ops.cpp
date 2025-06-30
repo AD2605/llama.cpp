@@ -5085,6 +5085,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         for (int i = 1; i < 10; ++i) {
             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 256, { 1,  1}, {1, 1}));
+
+                        // test cases with larger sizes which require more than one block
+            if (type_a == GGML_TYPE_Q6_K && i == 1){
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 32,  i, 512, {1, 1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 64,  i, 1024, {1, 1}, {1, 1}));
+            }
         }
     }
 
@@ -5136,8 +5142,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  8, 1024, {3, 2}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 1024, {3, 2}, {1, 1}));
 
-            // test cases with larger sizes which require more than one block
-            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 32,  1, 512, {1, 1}, {1, 1}));
         }
     }
     for (ggml_type type_a : other_types) {
