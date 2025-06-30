@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <sycl/aliases.hpp>
 #include <sycl/ext/oneapi/experimental/root_group.hpp>
+#include <sycl/functional.hpp>
 #include <sycl/group_algorithm.hpp>
 #include <sycl/nd_item.hpp>
 #include <sycl/sycl.hpp>
@@ -14,6 +15,7 @@
 #include "builtins.hpp"
 #include "cacheopts.hpp"
 #include "ggml-quants.h"
+#include "ggml-sycl/dpct/helper.hpp"
 
 #define sycl_print sycl::ext::oneapi::experimental::printf
 //
@@ -100,16 +102,18 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
             super_block_scale = *reinterpret_cast<sycl::half*>(&super_block_scale_loaded);
             
             auto element_width_offset = i * QK_K;
+            auto q6_l_w_coord_start = i * (QK_K / 2);
+            auto q6_h_w_coord_start = i * (QK_K / 4);
 
 #    pragma unroll(4)
             for (int j = 0; j < QK_K; j += tile_width) {
                 vector_types::short16 q6_low_bits = __builtin_IB_subgroup_block_read_flat_u8_m16k32v1(
                     (intptr_t) (q6_k_l), q6_k_l_width, m - 1, q6_k_l_width,
-                    vector_types::uint2{ (uint) (element_width_offset + j), (uint) h_coord });
+                    vector_types::uint2{ (uint) (q6_l_w_coord_start + j / 2), (uint) h_coord });
 
                 vector_types::char16 q6_high_bits = __builtin_IB_subgroup_block_read_flat_u8_m16k16v1(
                     (intptr_t) (q6_k_h), q6_k_h_width, m - 1, q6_k_h_width,
-                    vector_types::uint2{ (uint) (element_width_offset + j), (uint) h_coord });
+                    vector_types::uint2{ (uint) (q6_h_w_coord_start + j / 4), (uint) h_coord });
 
                 int packed_q8_1_vals = __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(
                     (intptr_t) (q8_1), q8_1_width, 0, q8_1_width,
@@ -130,12 +134,9 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(
             }
         }
 
-#    pragma unroll(15)
-        for (uint8_t l = 0; l < 15; l++) {
-            auto wi_id_to_fetch_from =
-                (wi_id_in_sg + 1 + l) % 16;  // + 1 becuase we do not want to fetch from the same wi_id !
-            float partial_accum_value = sycl::select_from_group(sg, accumulator[wi_id_in_sg], wi_id_to_fetch_from);
-            accumulator[wi_id_in_sg] += partial_accum_value;
+#    pragma unroll(16)
+        for (uint8_t l = 0; l < 16; l++) {
+            accumulator[l] = sycl::reduce_over_group(sg, accumulator[l], sycl::plus<>());
         }
 
         float final_result   = accumulator[wi_id_in_sg];
