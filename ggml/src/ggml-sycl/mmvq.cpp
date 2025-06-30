@@ -21,7 +21,7 @@ static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, c
     constexpr int     SubgroupSize           = 16;
     constexpr int     tile_height            = 16;
     const int         num_subgroups_required = m / tile_height;
-    std::cout << "num subgroups required: " << num_subgroups_required << std::endl;
+
     const std::size_t local_range            = static_cast<std::size_t>(SubgroupSize);
     const std::size_t global_range           = num_subgroups_required * local_range;
 
@@ -1050,8 +1050,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
             case GGML_TYPE_Q6_K:
                 if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
                     ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
-                    if (ctx.opt_feature.can_use_intel_builtins) {
-                        GGML_SYCL_DEBUG("calling q6_k_tiled_gemv");
+                    if (ctx.opt_feature.can_use_intel_builtins && (row_diff % 16 == 0) && (ne00 % 64 == 0)) {
+                        // TODO: move this inside q6_k_tiled_gemv function
+                        GGML_SYCL_DEBUG("calling q6_k_tiled_gemv\n");
                         auto m                 = row_diff;
                         auto k                 = ne00;
                         auto num_q6_blocks     = m * (k / QK_K);

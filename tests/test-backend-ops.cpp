@@ -5135,6 +5135,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  1, 1024, {3, 2}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16,  8, 1024, {3, 2}, {1, 1}));
             test_cases.emplace_back(new test_mul_mat(type_a, type_b, 16, 16, 1024, {3, 2}, {1, 1}));
+
+            // test cases with larger sizes which require more than one block
+            test_cases.emplace_back(new test_mul_mat(type_a, type_b, 32,  1, 512, {1, 1}, {1, 1}));
         }
     }
     for (ggml_type type_a : other_types) {
