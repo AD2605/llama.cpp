@@ -3141,19 +3141,6 @@ static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_
 
     std::vector<float> dequantized_values(rows * cols);
     auto num_blocks_per_row = cols / QK_K;
-    std::vector<block_q6_K> data_host(rows * num_blocks_per_row);
-    stream->copy((block_q6_K*)data_device, data_host.data(), rows * num_blocks_per_row).wait_and_throw();
-
-    for(int i = 0; i < rows; i++) {
-        dequantize_row_q6_K(data_host.data() + i * num_blocks_per_row, dequantized_values.data() + i * cols, cols);
-    }
-
-    for(int i = 0; i < rows; i++) {
-        for(int j = 0; j < cols; j++) {
-            std::cout << dequantized_values[i * cols + j] << " ";
-        }
-        std::cout << std::endl;
-    }
 
     auto *       ql_ptr     = data_device;
     auto *       qh_ptr     = ql_ptr + (QK_K / 2) * nblocks;
@@ -3235,38 +3222,6 @@ static void reorder_qw_q6_k_contiguous(uint8_t * data_device, size_t rows, size_
 
                        })
         .wait_and_throw();
-        std::vector<uint8_t> data_reordered_host(size);
-        stream->copy(data_device, data_reordered_host.data(), size).wait_and_throw();
-        //print low bits;
-
-        std::cout << "Printing low bits" << std::endl;
-        std::cout << "==============================================================================" << std::endl;
-        for(int i = 0; i < rows; i++) {
-            for(int j = 0; j < num_blocks_per_row; j++) {
-                auto low_bits_ptr = data_reordered_host.data() + i * num_blocks_per_row * QK_K / 2 + j * QK_K / 2;
-                for (int l = 0; l < QK_K / 2; l++) {
-                    printf("%x ", low_bits_ptr[l]);
-                }
-                std::cout << std::endl;
-            }
-            std::cout << std::endl;
-        }
-
-        auto high_bits_ptr = data_reordered_host.data() + nblocks * QK_K / 2;
-        std::cout << "==============================================================================" << std::endl;
-
-        for(int i = 0; i < rows; i++) {
-            for(int j = 0; j < num_blocks_per_row; j++) {
-                auto low_bits_ptr = data_reordered_host.data() + i * num_blocks_per_row * QK_K / 4 + j * QK_K / 4;
-                for (int l = 0; l < QK_K / 4; l++) {
-                    printf("%x ", low_bits_ptr[l]);
-                }
-                std::cout << std::endl;
-            }
-            std::cout << std::endl;
-        }
-        std::cout << "==============================================================================" << std::endl;
-
         sycl::free(tmp_buf, *stream);
 }
 
