@@ -4,9 +4,8 @@
 #include <sys/types.h>
 
 #include <cstdint>
-#include <tuple>
-
 #include <sycl/sycl.hpp>
+#include <tuple>
 
 #include "builtins.hpp"
 #include "cacheopts.hpp"
@@ -19,7 +18,7 @@ __attribute__((always_inline)) inline std::tuple<int, float> quantize_and_pack_i
     int   packed_quants = 0;
 #pragma unroll(4)
     for (int i = 0; i < 4; i++) {
-        amax             = sycl::fmax(amax, sycl::fabs(loaded_fp32_vals[i]));
+        amax = sycl::fmax(amax, sycl::fabs(loaded_fp32_vals[i]));
     }
 
     float amax_value_to_contribute = wi_id_in_sg > 7 ? 0 : amax;
@@ -143,7 +142,8 @@ __attribute__((always_inline)) inline void q6k_tiled_gemv(const int8_t * q6_k_l,
                     (intptr_t) (q6_k_h), q6_k_h_width, m - 1, q6_k_h_width,
                     vector_types::uint2{ (uint) (q6_h_w_coord_start + j / 4), (uint) h_coord });
 
-                auto loaded_fp32_vals = *reinterpret_cast<const sycl::vec<float, 4> *>(q8_1 + element_width_offset + j);
+                auto loaded_fp32_vals =
+                    *reinterpret_cast<const sycl::vec<float, 4> *>(q8_1 + element_width_offset + j + wi_id_in_sg * 4);
                 // int packed_q8_1_vals = __builtin_IB_subgroup_block_read_flat_u8_m1k64v1(
                 //     (intptr_t) (q8_1), q8_1_width, 0, q8_1_width,
                 //     vector_types::uint2{ (uint) (element_width_offset + j), (uint) 0 });

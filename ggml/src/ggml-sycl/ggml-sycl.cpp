@@ -3371,7 +3371,8 @@ static void ggml_sycl_mul_mat(ggml_backend_sycl_context & ctx, const ggml_tensor
         opt_for_reorder(&ctx, src0, src1, dst, mul_mat_algo::DMMV);
         ggml_sycl_op_mul_mat(ctx, src0, src1, dst, ggml_sycl_op_dequantize_mul_mat_vec, convert_src1_to_q8_1);
     } else if (use_mul_mat_vec_q) {
-        bool convert_src1_to_q8_1 = ctx.opt_feature.can_use_intel_builtins ? false : true;
+        // do not quantize the input for q6_k case we use the gemv with fused quantization
+        bool convert_src1_to_q8_1 = (ctx.opt_feature.can_use_intel_builtins && src0->type == GGML_TYPE_Q6_K) ? false : true;
         opt_for_reorder(&ctx, src0, src1, dst, mul_mat_algo::MMVQ);
         ggml_sycl_op_mul_mat(ctx, src0, src1, dst, ggml_sycl_op_mul_mat_vec_q, convert_src1_to_q8_1);
     } else if (use_mul_mat_q) {
