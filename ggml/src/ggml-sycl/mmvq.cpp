@@ -14,9 +14,9 @@
 #include "quants.hpp"
 #include "vecdotq.hpp"
 
-static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, const int8_t * q8_1_input,
-                            const int8_t * q6_scales, const sycl::half * q6_k_superblock_scales,
-                            const sycl::half2 * q8_scales, float * output, std::size_t m, std::size_t k,
+static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, const float * src1_f32,
+                            const int8_t * q6_scales, const sycl::half * q6_k_superblock_scales, 
+                            float * output, std::size_t m, std::size_t k,
                             dpct::queue_ptr stream) {
     constexpr int     SubgroupSize           = 16;
     constexpr int     tile_height            = 16;
@@ -28,8 +28,8 @@ static void q6_k_tiled_gemv(const int8_t * q6_k_low, const int8_t * q6_k_high, c
     sycl_launch(stream, [&](sycl::handler & cgh) {
         sycl_parallel_for(cgh, sycl::nd_range<1>({ global_range }, { local_range }),
                           [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(SubgroupSize)]] {
-                              [[clang::always_inline]] sycl::q6k_tiled_gemv(q6_k_low, q6_k_high, q8_1_input, output,
-                                                                            q6_scales, q8_scales,
+                              [[clang::always_inline]] sycl::q6k_tiled_gemv(q6_k_low, q6_k_high, src1_f32, output,
+                                                                            q6_scales,
                                                                             q6_k_superblock_scales, m, k, it);
                           });
     });
@@ -1005,6 +1005,7 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
         const size_t src1_ddq_i_offset = i * src1_padded_col_size * q8_1_ts / q8_1_bs;
         const char * src1_ddq_i_bs     = src1_ddq_i + src1_ddq_i_offset;
         float *      dst_dd_i_bs       = dst_dd_i + i * dst->ne[0];
+        const float*       src1_ddfi_row     = src1_ddf_i + i * src1_padded_col_size;
         switch (src0->type) {
             case GGML_TYPE_Q4_0:
                 if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
@@ -1060,9 +1061,8 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
                         auto q6_h_ptr          = q6_l_ptr + (QK_K / 2) * num_q6_blocks;
                         auto scales_u8_q6_k    = q6_h_ptr + (QK_K / 4) * num_q6_blocks;
                         auto scales_q6_k_superblock      = (sycl::half*)(scales_u8_q6_k  + num_q6_blocks * (QK_K / 16));
-                        auto q8_1_input        = (int8_t *) src1_ddq_i_bs;
-                        auto q8_1_input_scales = (sycl::half2 *) (q8_1_input + k);
-                        q6_k_tiled_gemv(q6_l_ptr, q6_h_ptr, q8_1_input, scales_u8_q6_k, scales_q6_k_superblock, q8_1_input_scales, dst_dd_i_bs, m, k,
+                        auto src_1_f32        = src1_ddfi_row;
+                        q6_k_tiled_gemv(q6_l_ptr, q6_h_ptr, src_1_f32, scales_u8_q6_k, scales_q6_k_superblock, dst_dd_i_bs, m, k,
                                         stream);
                     } else {
                         GGML_SYCL_DEBUG("Calling reorder_mul_mat_vec_q6_k_q8_1_sycl\n");
@@ -1107,6 +1107,5 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
     }
     GGML_UNUSED(src1);
     GGML_UNUSED(dst);
-    GGML_UNUSED(src1_ddf_i);
     GGML_UNUSED(ctx);
 }
